@@ -5,8 +5,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # --- Configuración (¡Mueve esto a variables de entorno en producción!) ---
-TELEGRAM_BOT_TOKEN = "TU_BOT_TOKEN_AQUI"
-GITHUB_ACCESS_TOKEN = "TU_TOKEN_DE_GITHUB_AQUI"
+TELEGRAM_BOT_TOKEN = "8534765454:AAFjZZbb35rjS594M2kF0NdFQpR5PbQX8qI"
+GITHUB_ACCESS_TOKEN = "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"
 # ----------------------------------------------------------------
 
 # Inicializar cliente de GitHub
