@@ -1,40 +1,128 @@
-import asyncio
 import os
-from github import Github  # PyGithub library
+import asyncio
+import logging
+from github import Github
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# --- Configuración (¡Mueve esto a variables de entorno en producción!) ---
-TELEGRAM_BOT_TOKEN = "8534765454:AAFjZZbb35rjS594M2kF0NdFQpR5PbQX8qI"
-GITHUB_ACCESS_TOKEN = "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"
-# ----------------------------------------------------------------
+# --- CONFIGURACIÓN (Se cargará desde variables de entorno en Render) ---
+TELEGRAM_BOT_TOKEN = os.environ.get('8534765454:AAFjZZbb35rjS594M2kF0NdFQpR5PbQX8qI')
+GITHUB_ACCESS_TOKEN = os.environ.get('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')
+
+# Configurar logging para ver errores
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Inicializar cliente de GitHub
-github_client = Github(GITHUB_ACCESS_TOKEN)
+if GITHUB_ACCESS_TOKEN:
+    github_client = Github(GITHUB_ACCESS_TOKEN)
+else:
+    github_client = None
+    logger.error("❌ GITHUB_ACCESS_TOKEN no configurado")
 
-# Comando /start
+# ----- MANEJADORES DE COMANDOS (ASÍNCRONOS) -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         'Hola! Soy tu gestor de repositorios de GitHub. Usa /list para ver tus repos.'
     )
 
-# Comando /list - Lista repositorios con botones
 async def list_repos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = github_client.get_user()
-    repos = user.get_repos()
+    if not github_client:
+        await update.message.reply_text("Error: Configuración de GitHub incompleta.")
+        return
 
-    keyboard = []
-    for repo in repos:  # Solo iteramos sobre los primeros X repos para no saturar
-        # Cada repo tiene un botón que al pulsarlo envía un callback con su nombre
-        keyboard.append([InlineKeyboardButton(repo.name, callback_data=f"repo_{repo.name}")])
+    try:
+        user = github_client.get_user()
+        repos = user.get_repos()
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('Tus repositorios:', reply_markup=reply_markup)
+        keyboard = []
+        # Mostrar solo los primeros 30 repos para no saturar
+        for repo in list(repos)[:30]:
+            keyboard.append([InlineKeyboardButton(repo.name, callback_data=f"repo_{repo.name}")])
 
-# Manejar la pulsación de botones (CallbackQueries)
+        if not keyboard:
+            await update.message.reply_text("No tienes repositorios.")
+            return
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text('Selecciona un repositorio:', reply_markup=reply_markup)
+
+    except Exception as e:
+        logger.error(f"Error al listar repos: {e}")
+        await update.message.reply_text(f"Error al conectar con GitHub: {e}")
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()  # Responde a la callback para quitar el "reloj de carga"
+    await query.answer()
+
+    data = query.data
+
+    if data.startswith("repo_"):
+        repo_name = data.split("_", 1)[1]
+        keyboard = [
+            [InlineKeyboardButton("⬇️ Descargar ZIP", callback_data=f"dl_{repo_name}")],
+            [InlineKeyboardButton("🗑️ Eliminar", callback_data=f"del_ask_{repo_name}")],
+            [InlineKeyboardButton("↩️ Volver", callback_data="back_list")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=f"Repositorio: `{repo_name}`\nElige:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    elif data == "back_list":
+        # Reenviar al usuario al comando /list
+        await list_repos(update, context)
+    elif data.startswith("dl_"):
+        repo_name = data.split("_", 1)[1]
+        await query.edit_message_text(f"⏳ Preparando descarga de `{repo_name}`... (Función en desarrollo)")
+        # Aquí iría el código para descargar y enviar el ZIP
+    elif data.startswith("del_ask_"):
+        repo_name = data.split("_", 2)[2]
+        keyboard = [
+            [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"del_confirm_{repo_name}")],
+            [InlineKeyboardButton("❌ Cancelar", callback_data=f"repo_{repo_name}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=f"⚠️ ¿Eliminar `{repo_name}`? *IRREVERSIBLE*.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    elif data.startswith("del_confirm_"):
+        repo_name = data.split("_", 2)[2]
+        try:
+            user = github_client.get_user()
+            repo = user.get_repo(repo_name)
+            repo.delete()
+            await query.edit_message_text(f"✅ Repositorio `{repo_name}` eliminado.")
+        except Exception as e:
+            logger.error(f"Error al eliminar: {e}")
+            await query.edit_message_text(f"❌ Error al eliminar: {e}")
+
+# ----- FUNCIÓN PRINCIPAL -----
+def main():
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("❌ TELEGRAM_BOT_TOKEN no configurado")
+        return
+
+    # 1. Crear la Application (CORRECTO para v20)
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # 2. Registrar manejadores
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("list", list_repos))
+    application.add_handler(CallbackQueryHandler(button_callback))
+
+    # 3. Iniciar el bot en modo polling
+    logger.info("🤖 Bot iniciando...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()    await query.answer()  # Responde a la callback para quitar el "reloj de carga"
 
     data = query.data
 
